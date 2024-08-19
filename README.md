@@ -114,37 +114,37 @@ The extra `-femit-asm` flag makes Zig produce assembly output which is handy whe
 
 ```asm
 main.delay_ticks:           ; r0 contains the number of ticks already.
-	movs	r1, #1
-	lsls	r1, r1, #29     ; (1 << 29) is this 0x20000000 address we are reading from below.
+    movs    r1, #1
+    lsls    r1, r1, #29     ; (1 << 29) is this 0x20000000 address we are reading from below.
 .LBB1_1:
-	cbz	r0, .LBB1_3         ; 1 cycle, branch not taken. (Jump out of the loop if tick counter in r0 is zero.)
-	ldr	r2, [r1]            ; 2 cycles. (Our fake read.)
-	subs	r0, r0, #1      ; 1 cycle. (Decrement the tick counter in r0.)
-	b	.LBB1_1             ; 2 cycles, branch is taken. (Repeat the loop.)
+    cbz r0, .LBB1_3         ; 1 cycle, branch not taken. (Jump out of the loop if tick counter in r0 is zero.)
+    ldr r2, [r1]            ; 2 cycles. (Our fake read.)
+    subs    r0, r0, #1      ; 1 cycle. (Decrement the tick counter in r0.)
+    b   .LBB1_1             ; 2 cycles, branch is taken. (Repeat the loop.)
 .LBB1_3:
-	bx	lr                  ; Return from the function.
+    bx  lr                  ; Return from the function.
 ```
 
 Speaking of assembly, we could also disassemble the output file directly with `objdump -d main`, but it might be harder to see what's going on, here is the same `delay_ticks()` function:
 
-    20130: 2101         	movs	r1, #1
-    20132: 0749         	lsls	r1, r1, #29
-    20134: b110         	cbz	r0, 0x2013c <.text+0x50> @ imm = #4
-    20136: 680a         	ldr	r2, [r1]
-    20138: 1e40         	subs	r0, r0, #1
-    2013a: e7fb         	b	0x20134 <.text+0x48>    @ imm = #-10
-    2013c: 4770         	bx	lr
+    20130: 2101             movs    r1, #1
+    20132: 0749             lsls    r1, r1, #29
+    20134: b110             cbz r0, 0x2013c <.text+0x50> @ imm = #4
+    20136: 680a             ldr r2, [r1]
+    20138: 1e40             subs    r0, r0, #1
+    2013a: e7fb             b   0x20134 <.text+0x48>    @ imm = #-10
+    2013c: 4770             bx  lr
 
 Another thing that we can see with `objdump` is that our code starts at address `000200ec` which is quite wrong for our MCU where flash memory begins at `0x08000000`:
 
-    main:	file format elf32-littlearm
+    main:   file format elf32-littlearm
 
     Disassembly of section .text:
 
     000200ec <.text>:
-       200ec: 480c         	ldr	r0, [pc, #48]           @ 0x20120 <.text+0x34>
-       200ee: 6801         	ldr	r1, [r0]
-       200f0: 2210         	movs	r2, #16
+       200ec: 480c          ldr r0, [pc, #48]           @ 0x20120 <.text+0x34>
+       200ee: 6801          ldr r1, [r0]
+       200f0: 2210          movs    r2, #16
     ...
 
 Well, this is logical because Zig does not really know much about our MCU. We need to help it by writing a "linker script". The official documentation on the topic mentioned above is easy to read and actual scripts are fairly self-explanatory.
@@ -152,8 +152,8 @@ Well, this is logical because Zig does not really know much about our MCU. We ne
 The first thing we do in our script (`v0/bluepill.ld`) is describing relevant memory regions, which is quite simple in our case as we have 128K of flash memory starting at `0x08000000` and 20K of RAM starting at `0x20000000` (see chapter 4 in the Datasheet):
 
     MEMORY {
-    	flash (rx)	: o = 0x08000000, l = 128K
-    	sram (rw)	: o = 0x20000000, l = 20K
+        flash (rx)  : o = 0x08000000, l = 128K
+        sram (rw)   : o = 0x20000000, l = 20K
     }
 
 (The names of the regions can be arbitrary here, the linker does not know what the "flash" is.)
@@ -161,9 +161,9 @@ The first thing we do in our script (`v0/bluepill.ld`) is describing relevant me
 The next part of the script tells what should be placed into the flash memory:
 
     SECTIONS {
-    	.text : {
+        .text : {
             ...
-    	} >flash
+        } >flash
 
 We cannot tell it to begin filling with the code from the start as the first word has to be the value of the main stack pointer (MSP), as per chapter 2.1.2 of the Programming Manual:
 
@@ -173,31 +173,31 @@ We cannot tell it to begin filling with the code from the start as the first wor
 
 Next go interrupt vectors (see table 63 in the Reference Manual) of which we are only interested in the first one, Reset, as we don't use interrupts just yet:
 
-	.text : {
+    .text : {
         /* The initial value of SP, past the end of RAM. */
-		LONG(ORIGIN(sram) + LENGTH(sram))
+        LONG(ORIGIN(sram) + LENGTH(sram))
         /* Reset vector. */
-		LONG(_start)
-		/* We should put a bunch of other vectors here, but since none are used yet we can use the space. */
+        LONG(_start)
+        /* We should put a bunch of other vectors here, but since none are used yet we can use the space. */
         /* So now goes our code. */
-		*(.text)
+        *(.text)
         /* Then read-only data. */
-		*(.rodata.*) 
-		*(.rodata) 
-	} >flash
+        *(.rodata.*) 
+        *(.rodata) 
+    } >flash
 
 Next we tell that our writable data (static variables) is expected in RAM. We don't have such variables in our simple example yet, but that'll be handy later.
 
-	.bss : { 
-		*(.bss) 
-	} >sram
+    .bss : { 
+        *(.bss) 
+    } >sram
 
 And finally we exclude a few extra code segments that otherwise would increase the size of our binary:
 
-	/DISCARD/ : { 
-		/* I don't want to keep sections needed only when printing stack traces. */
-		*(.ARM.*)
-	}
+    /DISCARD/ : { 
+        /* I don't want to keep sections needed only when printing stack traces. */
+        *(.ARM.*)
+    }
 
 Let's compile using our linker script now:
 
@@ -205,26 +205,26 @@ Let's compile using our linker script now:
 
 Disassembling with `objdump` shows that the addresses are correct now:
 
-    main:	file format elf32-littlearm
+    main:   file format elf32-littlearm
 
     Disassembly of section .text:
 
     08000000 <.text>:
-     8000000: 20005000     	andhs	r5, r0, r0
-     8000004: 08000009     	stmdaeq	r0, {r0, r3}
-     8000008: 6801480c     	stmdavs	r1, {r2, r3, r11, lr}
+     8000000: 20005000      andhs   r5, r0, r0
+     8000004: 08000009      stmdaeq r0, {r0, r3}
+     8000008: 6801480c      stmdavs r1, {r2, r3, r11, lr}
     ...
 
 The first word appears to be the desired stack pointer just beyond the RAM followed by the Reset vector pointing to the next word. The number is even to indicate Thumb mode. Let's add `--mcpu=cortex-m23` to force Thumb mode:
 
     08000000 <.text>:
-     8000000: 5000         	str	r0, [r0, r0]
-     8000002: 2000         	movs	r0, #0
-     8000004: 0009         	movs	r1, r1
-     8000006: 0800         	lsrs	r0, r0, #32
-     8000008: 480c         	ldr	r0, [pc, #48]           @ 0x800003c <.text+0x3c>
-     800000a: 6801         	ldr	r1, [r0]
-     800000c: 2210         	movs	r2, #16
+     8000000: 5000          str r0, [r0, r0]
+     8000002: 2000          movs    r0, #0
+     8000004: 0009          movs    r1, r1
+     8000006: 0800          lsrs    r0, r0, #32
+     8000008: 480c          ldr r0, [pc, #48]           @ 0x800003c <.text+0x3c>
+     800000a: 6801          ldr r1, [r0]
+     800000c: 2210          movs    r2, #16
      ...
      
 OK, now the part starting at `0x8000008` looks like the code in our `.s` file.
@@ -256,7 +256,7 @@ Also, as you can see our code is just 90 bytes, which is quite nice given all th
 
 ### V1
 
-Now let's improve the example showing some power of Zig.
+Now let's improve the example showing some power of Zig:
 
 ```zig
 
@@ -276,10 +276,48 @@ export fn _start() noreturn {
 }
 ```
 
-The `GPIOBank` is an abstraction that is more readable, more reusable (we can use all banks/ports) but does not add any overhead. Our program is 94 bytes, which is just 4 bytes larger only because we are not relying on the reset values when writing to `GPIOC_CRH` as we want to change pin configuration at runtime.
+The `GPIOBank` is an abstraction that is more readable, more reusable (we can use all banks/ports) but does not add any overhead as all the selection of the bank and port happen at compile time. Our program is 94 bytes now, which is just 4 bytes larger only because we are not relying on the reset values when writing to `GPIOC_CRH` as we want to change pin configuration at runtime:
+
+```zig
+pub fn GPIOBank(comptime bank: GPIOBankIndex) type {
+    return struct {
+        /* ... */
+        pub fn port(comptime pin: u4) type {
+            return struct {
+                fn reg(comptime offset: u32) *volatile u32 {
+                    return @ptrFromInt(switch (bank) {
+                        .A => 0x4001_0800,
+                        .B => 0x4001_0C00,
+                        .C => 0x4001_1000,
+                        .D => 0x4001_1400,
+                        .E => 0x4001_1800,
+                    } + offset);
+                }
+
+                fn setModeBits(comptime bits: u32) void {
+                    const CRx = reg(if (pin >= 8) 0x04 else 0x00);
+                    const shift = 4 * @as(u8, if (pin >= 8) pin - 8 else pin);
+                    CRx.* = CRx.* & ~(@as(u32, 0xF) << shift) | (bits << shift);
+                }
+                
+                const BSRR = reg(0x10);
+
+                pub fn set() void {
+                    BSRR.* = 1 << pin;
+                }
+                /* ... */
+            };
+        }
+    };
+}
+```
+
+As you can see `reg()` depends on the bank, but since both `bank` and `pin` are `comptime` both `GPIOx_CRx` (L or H) and `GPIOx_BSRR` registers are picked at compile time.
 
 ### V2
 
 Here we are adding `SysTick` timer for nicer `delay()` along with `USART` to say the actual `Hello`.
+
+To be continued.
 
 ---
