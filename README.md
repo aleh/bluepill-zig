@@ -23,9 +23,9 @@ Pill" clones of Maple Mini.
 - [STM32F103x8 Datasheet](https://www.st.com/resource/en/datasheet/stm32f103c8.pdf) to know what exactly is available
   in our MCU as the above reference manual describes the whole family.
 
-- [Info on Linker Scripts](http://web.mit.edu/rhel-doc/3/rhel-ld-en-3/scripts.html) to be able to describe memory layout to the linker.
+- [Info on Linker Scripts](https://ftp.gnu.org/old-gnu/Manuals/ld-2.9.1/html_chapter/ld_3.html) to be able to describe memory layout to the linker.
 
-## Getting Started
+## Target
 
 One of the cool things about Zig is that (thanks to LLVM) it can compile for many architectures out of the box and yet
 manages to keep its MacOS package size under 50MB without any external dependencies!
@@ -47,7 +47,7 @@ won't generate something unsupported.)
 
 Before we go to the remaining compiler settings let's type in some code first. Let's make the classic "Blink" example toggling the on-board LED (see `v0/main.zig`). It's not going to be nice, but we'll improve it later.
 
-### Version 0
+## Version 0
 
 Looking at the Blue Pill Schematic we see that the LED is attached to PC13 of the MCU which can be controlled via port 13 of GPIO bank C. GPIO and the corresponding registers are described in Chapter 9 of the Reference Manual, while the base address of bank C, `0x4001_1000`, can be found in the STM32F103x8 Datasheet. 
 
@@ -104,7 +104,7 @@ fn delay(comptime ms: u32) void {
 }
 ```
 
-### Linker Script
+## Linker Script
 
 OK, now when we have a basic program (see `v0/main.zig`) we can try to compile it:
 
@@ -229,7 +229,7 @@ The first word appears to be the desired stack pointer just beyond the RAM follo
      
 OK, now the part starting at `0x8000008` looks like the code in our `.s` file.
 
-### Flashing
+## Flashing
 
 We'll be using `st-flash` utility which expects either a raw binary with the starting address passes separately or an Intel hex file that already contains addresses. Let's use the latter by converting our build to `.hex` with Zig:
 
@@ -254,12 +254,11 @@ You'll see something like this and your LED will hopefully start blinking every 
 
 Also, as you can see our code is just 90 bytes, which is quite nice given all the required setup instructions.
 
-### V1
+## V1
 
 Now let's improve the example showing some power of Zig:
 
 ```zig
-
 export fn _start() noreturn {
     const bankC = GPIOBank(.C);
     bankC.init();
@@ -312,12 +311,185 @@ pub fn GPIOBank(comptime bank: GPIOBankIndex) type {
 }
 ```
 
-As you can see `reg()` depends on the bank, but since both `bank` and `pin` are `comptime` both `GPIOx_CRx` (L or H) and `GPIOx_BSRR` registers are picked at compile time.
+As you can see `reg()` depends on the bank, but since both `bank` and `pin` are `comptime`, thus both `GPIOx_CRx` (L or H) and `GPIOx_BSRR` are picked at compile time as well and we always get highly optimized code.
 
-### V2
+## V2
 
 Here we are adding `SysTick` timer for nicer `delay()` along with `USART` to say the actual `Hello`.
 
-To be continued.
+```zig
+const z41 = @import("z41");
+
+export fn _start() noreturn {
+    const rcc = z41.RCC(.internalRC);
+    rcc.init();
+
+    const sysTick = z41.SysTick(rcc.SYSCLK, 50);
+    sysTick.init();
+
+    const led = z41.GPIO(rcc, .C).port(13);
+    led.Bank.init();
+    led.setOutput(.openDrain, .max2MHz);
+
+    const usart = z41.USART(rcc, .usart1);
+    usart.init(115200);
+
+    while (true) {
+        led.reset();
+        sysTick.delay(50);
+        led.set();
+        sysTick.delay(950);
+        usart.write_string("Hello\n");
+    }
+}
+```
+
+I've moved all helpers into a module called `z41` here and using a `SysTick` timer for better timeouts along with a basic `USART` wrapper.
+
+### RegisterSet
+
+I've added `RegisterSet` under the hood to help with definition of hardware registers. It's similar to this `reg()` helper from `v0`, but allows using structs as well. For example, this is how `STK_CTRL` is described in `SysTick` (you should appreciate Zig allowing anonymous `enum`s like here in `CLKSOURCE`):
+
+```zig
+const STK_CTRL = regs.at(0, packed struct(u32) {
+    /// Counter enable.
+    ENABLE: bool,
+    TICKINT: bool,
+    CLKSOURCE: enum(u1) {
+        /// AHB/8.
+        AHB_8 = 0,
+        /// Processor clock (AHB).
+        AHB = 1,
+    },
+    _r1: u13 = 0,
+    COUNTFLAG: bool = false,
+    _r2: u15 = 0,
+});
+```
+
+You can still use raw `u32` registers where needed:
+
+```zig
+const STK_LOAD = regs.at(4, u32);
+```
+
+The helper checks the type you pass to make sure it's `u32` or `u32`-backed `packed struct`:
+
+```zig
+pub fn at(comptime offset: u32, comptime reg_type: type) *volatile reg_type {
+    const valid = switch (@typeInfo(reg_type)) {
+        .Struct => |s| switch (s.layout) {
+            .@"packed" => s.backing_integer == u32,
+            else => false,
+        },
+        .Int => |i| i.bits == 32,
+        else => false,
+    };
+    if (!valid) {
+        @compileError("Expected `reg_type` to be u32 or a packed struct backed by u32");
+    }
+    return @ptrFromInt(base + offset);
+}
+```
+
+### SysTick
+
+A `SysTick` timer is described in the chapter 4.5 of the Programming Manual and is something common to all processors based on Cortex®-M3. It's a simple counter that is decremented on every (or every 8ths) CPU clock cycle and generating an interrupt when reaching zero. It can be used to implement a notion of system time (e.g. milliseconds since system start) along with better delays where we don't have to rely on how exactly our code is compiled.
+
+We need to be able to handle interrupts for this helper and this is where our linker script needs to be changed. The handler itself is simple:
+
+```
+pub fn SysTick(comptime cpuFreq: u32, comptime msPerTick: u32) type {
+    return struct {
+        /// The total tick counter we increment on every interrupt.
+        var counter: u32 = undefined;
+
+        export fn SysTick_Vector() void {
+            counter = counter +% 1;
+        }
+        ...
+```
+
+The handler needs to be `export`ed for our linker script to place a pointer to it into appropriate location. (Note that the export only happens when `SysTick` is used, something that would be hard to achieve in C/C++ without macros.) 
+
+Other than `export` no special interrupt-related syntax or attributes are needed thanks to the clever way interrupts are handled in this architecture:
+
+- registers r0-r3 are automatically pushed to the stack along with flags when an interrupt occurs, while remaining registers are already expected to be preserved by the compiler even by regular functions;
+
+- unlike other architectures no special "return from interrupt" instruction is needed here because the return address in LR register is set to a special value that any regular return from function (`bx lr`) will be recognized as a return from interrupt restoring r0-r3, etc.
+
+So we need to add a pointer to our handler into the interrupt vector table at the start of our code (see table 63 in the Reference Manual again):
+
+    .text : {
+        ...
+    	LONG(_start);
+    
+        /* We don't use any interrupt vectors before SysTick, so let's just fill.  */
+        FILL(0); . = ADDR(.text) + 0x003C;
+    
+        LONG(DEFINED(SysTick_Vector) ? SysTick_Vector : 0xDEAD);
+    
+    	/* Other vectors follow, but since we are not using them we can just start our code earlier. */
+        ...
+
+Note the use of `DEFINED`: it allows correct linking even when the target program does not use the `SysTick` timer. (By the way, the use of `0xDEAD` for undefined handlers is temporary here, a central "panic" handler halting the MCU would be a better option eventually.)
+
+### `build.zig`
+
+I've been using a simple shell script (see `build.sh`)to build and flash the first 2 examples:
+
+```bash
+#!/bin/sh -e
+zig build-exe \
+	-target arm-freestanding-none \
+	-mcpu cortex_m23 \
+	-femit-asm \
+	-O ReleaseSmall \
+	--script bluepill.ld \
+	main.zig
+zig objcopy -O hex main main.hex
+# rm main main.o
+st-flash --reset --format ihex write main.hex 
+```
+
+However in this one we want to be able to pull our helpers from a "module" in `./lib`. This still could be described in a shell script of course, but also was curious how Zig build system works, so here is our `build.zig`:
+
+```zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) !void {
+    const exe = b.addExecutable(.{
+        .name = "main",
+        .root_source_file = b.path("main.zig"),
+        // We support only STM32F103xx.
+        .target = b.resolveTargetQuery(try std.Build.parseTargetQuery(.{
+            .arch_os_abi = "arm-freestanding-none",
+            .cpu_features = "cortex_m23",
+        })),
+        .optimize = .ReleaseSmall,
+    });
+    exe.linker_script = b.path("bluepill.ld");
+    exe.root_module.addImport("z41", b.createModule(.{ .root_source_file = b.path("../lib/z41.zig") }));
+
+    const objcopy = b.addObjCopy(exe.getEmittedBin(), .{ .basename = "main", .format = .hex });
+    const install_hex = b.addInstallBinFile(objcopy.getOutput(), "main.hex");
+    b.getInstallStep().dependOn(&install_hex.step);
+
+    const flash_cmd = b.addSystemCommand(&.{ "st-flash", "--reset", "--format", "ihex", "write" });
+    // Could be better to depend on the installed hex?
+    flash_cmd.addFileArg(objcopy.getOutput());
+
+    const flash_step = b.step("flash", "Flash the binary");
+    flash_step.dependOn(&flash_cmd.step);
+}
+```
+
+Now the example can be compiled with:
+
+    zig build 
+    
+or flashed with:
+    
+    zig build flash
 
 ---

@@ -16,7 +16,7 @@ SECTIONS {
         /* We don't use any interrupt vectors before SysTick, so let's just fill.  */
         FILL(0); . = ADDR(.text) + 0x003C;
         
-        LONG(_SysTickInt);
+        LONG(DEFINED(SysTick_Vector) ? SysTick_Vector : 0xDEAD);
         
 		/* Other vectors follow, but since we are not using them we can just start our code earlier. */
         

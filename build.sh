@@ -7,5 +7,5 @@ zig build-exe \
 	--script bluepill.ld \
 	main.zig
 zig objcopy -O hex main main.hex
-rm main main.o
+# rm main main.o
 st-flash --reset --format ihex write main.hex 
