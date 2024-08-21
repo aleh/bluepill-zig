@@ -1,3 +1,4 @@
+const std = @import("std");
 const common = @import("common.zig");
 const GPIO = common.GPIO;
 const USARTIndex = common.USARTIndex;
@@ -77,16 +78,27 @@ pub fn USART(comptime rcc: type, comptime index: USARTIndex) type {
             };
         }
 
-        pub fn write_byte(byte: u8) void {
+        pub fn writeByte(byte: u8) void {
             DR.* = byte;
             while (!SR.TXE) {}
         }
 
-        pub fn write_string(string: []const u8) void {
-            for (string) |byte| {
-                if (byte == 0) break;
-                write_byte(byte);
+        pub fn writeBytes(bytes: []const u8) void {
+            for (bytes) |byte| {
+                Self.writeByte(byte);
             }
         }
+
+        const Self = @This();
+
+        fn _write(context: void, bytes: []const u8) error{}!usize {
+            _ = context;
+            Self.writeBytes(bytes);
+            return bytes.len;
+        }
+
+        pub const writer = std.io.GenericWriter(void, error{}, _write){
+            .context = void{},
+        };
     };
 }

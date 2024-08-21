@@ -3,11 +3,15 @@ const common = @import("common.zig");
 /// Very simple wrapper for the SysTick timer.
 pub fn SysTick(comptime cpuFreq: u32, comptime msPerTick: u32) type {
     return struct {
-        /// The total tick counter we increment on every interrupt.
-        var counter: u32 = undefined;
-
         export fn SysTick_Vector() void {
-            counter = counter +% 1;
+            total_ms +%= msPerTick;
+        }
+
+        var total_ms: u32 = undefined;
+
+        /// The total milliseconds since initialization.
+        pub inline fn milliseconds() u32 {
+            return @as(*volatile u32, &total_ms).*;
         }
 
         // See chapter 4.5 of the Programming manual.
@@ -30,33 +34,31 @@ pub fn SysTick(comptime cpuFreq: u32, comptime msPerTick: u32) type {
 
         const STK_LOAD = regs.at(4, u32);
         //~ const STK_VAL = reg(8);
-        //~ const STK_CALIB = reg(12)
 
         pub fn init() void {
-            counter = 0;
+            total_ms = 0;
+
             // We want a tick interrupt every msPerTick milliseconds.
-            // The value of the counter is decremented every 8th cycle of the CPU clock.
-            STK_LOAD.* = (cpuFreq / 8) * msPerTick / 1000; // TODO: minus one?
+            // The value of the counter is decremented every cycle of the CPU clock.
+            // It should be one cycle less to account for one cycle between 0 and reloading.
+            const load = @as(u64, cpuFreq) * msPerTick / 1000 - 1;
+            if (!(1 <= load and load <= 0xFFFFFF)) {
+                @compileError("Invalid SysTick load value for the given msPerTick and CPU frequency");
+            }
+            STK_LOAD.* = load;
+
             STK_CTRL.* = .{
                 .ENABLE = true,
                 .TICKINT = true,
-                .CLKSOURCE = .AHB_8,
+                .CLKSOURCE = .AHB,
             };
         }
 
-        pub fn value() u32 {
-            return @as(*volatile u32, &counter).*;
-        }
-
-        fn delay_ticks(ticks: u32) void {
-            const start = value();
-            while (value() - start < ticks) {
+        pub fn delay(ms: u32) void {
+            const start = milliseconds();
+            while (milliseconds() - start < ms) {
                 common.wait_for_interrupt();
             }
-        }
-
-        pub fn delay(comptime ms: u32) void {
-            delay_ticks((ms + msPerTick - 1) / msPerTick);
         }
     };
 }

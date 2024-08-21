@@ -14,8 +14,11 @@ pub fn build(b: *std.Build) !void {
     exe.linker_script = b.path("bluepill.ld");
     exe.root_module.addImport("z41", b.createModule(.{ .root_source_file = b.path("../lib/z41.zig") }));
 
+    const install_asm = b.addInstallFile(exe.getEmittedAsm(), "main.s");
+    b.getInstallStep().dependOn(&install_asm.step);
+
     const objcopy = b.addObjCopy(exe.getEmittedBin(), .{ .basename = "main", .format = .hex });
-    const install_hex = b.addInstallBinFile(objcopy.getOutput(), "main.hex");
+    const install_hex = b.addInstallFile(objcopy.getOutput(), "main.hex");
     b.getInstallStep().dependOn(&install_hex.step);
 
     const flash_cmd = b.addSystemCommand(&.{ "st-flash", "--reset", "--format", "ihex", "write" });

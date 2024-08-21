@@ -315,17 +315,18 @@ As you can see `reg()` depends on the bank, but since both `bank` and `pin` are 
 
 ## V2
 
-Here we are adding `SysTick` timer for nicer `delay()` along with `USART` to say the actual `Hello`.
+Here we are adding a `SysTick` timer for a better `delay()` along with `USART` to say the actual `Hello`. Our binary is `792` bytes now, or `314` if we completely remove the line with `usart.writer.print`, and `432` if we keep it but don't output the number. In other words, the use of `std.fmt` adds overhead only when specifiers are actually used, something that would be hard to achieve with a `printf()`-style C/C++ function.
 
 ```zig
+const std = @import("std");
 const z41 = @import("z41");
 
 export fn _start() noreturn {
     const rcc = z41.RCC(.internalRC);
     rcc.init();
 
-    const sysTick = z41.SysTick(rcc.SYSCLK, 50);
-    sysTick.init();
+    const SysTick = z41.SysTick(rcc.SYSCLK, 50);
+    SysTick.init();
 
     const led = z41.GPIO(rcc, .C).port(13);
     led.Bank.init();
@@ -334,12 +335,16 @@ export fn _start() noreturn {
     const usart = z41.USART(rcc, .usart1);
     usart.init(115200);
 
+    usart.writeBytes("\nHello! It's V2\n\n");
+
     while (true) {
         led.reset();
-        sysTick.delay(50);
+        SysTick.delay(50);
+
         led.set();
-        sysTick.delay(950);
-        usart.write_string("Hello\n");
+        SysTick.delay(950);
+
+        try usart.writer.print("\rUptime: {}s", .{SysTick.milliseconds() / 1000});
     }
 }
 ```
@@ -401,12 +406,11 @@ We need to be able to handle interrupts for this helper and this is where our li
 ```
 pub fn SysTick(comptime cpuFreq: u32, comptime msPerTick: u32) type {
     return struct {
-        /// The total tick counter we increment on every interrupt.
-        var counter: u32 = undefined;
-
         export fn SysTick_Vector() void {
-            counter = counter +% 1;
+            total_ms +%= msPerTick;
         }
+
+        var total_ms: u32 = undefined;
         ...
 ```
 
@@ -448,48 +452,12 @@ zig build-exe \
 	--script bluepill.ld \
 	main.zig
 zig objcopy -O hex main main.hex
-# rm main main.o
+rm main main.o
 st-flash --reset --format ihex write main.hex 
 ```
 
-However in this one we want to be able to pull our helpers from a "module" in `./lib`. This still could be described in a shell script of course, but also was curious how Zig build system works, so here is our `build.zig`:
+However in this one we want to be able to pull our helpers from a "module" in `./lib`. This still could be described in a shell script of course, but also was curious how Zig build system works, so I've added `build.zig`.
 
-```zig
-const std = @import("std");
-
-pub fn build(b: *std.Build) !void {
-    const exe = b.addExecutable(.{
-        .name = "main",
-        .root_source_file = b.path("main.zig"),
-        // We support only STM32F103xx.
-        .target = b.resolveTargetQuery(try std.Build.parseTargetQuery(.{
-            .arch_os_abi = "arm-freestanding-none",
-            .cpu_features = "cortex_m23",
-        })),
-        .optimize = .ReleaseSmall,
-    });
-    exe.linker_script = b.path("bluepill.ld");
-    exe.root_module.addImport("z41", b.createModule(.{ .root_source_file = b.path("../lib/z41.zig") }));
-
-    const objcopy = b.addObjCopy(exe.getEmittedBin(), .{ .basename = "main", .format = .hex });
-    const install_hex = b.addInstallBinFile(objcopy.getOutput(), "main.hex");
-    b.getInstallStep().dependOn(&install_hex.step);
-
-    const flash_cmd = b.addSystemCommand(&.{ "st-flash", "--reset", "--format", "ihex", "write" });
-    // Could be better to depend on the installed hex?
-    flash_cmd.addFileArg(objcopy.getOutput());
-
-    const flash_step = b.step("flash", "Flash the binary");
-    flash_step.dependOn(&flash_cmd.step);
-}
-```
-
-Now the example can be compiled with:
-
-    zig build 
-    
-or flashed with:
-    
-    zig build flash
+Now the example can be compiled with `zig build` or flashed with `zig build flash`.
 
 ---
