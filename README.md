@@ -315,7 +315,9 @@ As you can see `reg()` depends on the bank, but since both `bank` and `pin` are 
 
 ## V2
 
-Here we are adding a `SysTick` timer for a better `delay()` along with `USART` to say the actual `Hello`. Our binary is `792` bytes now, or `314` if we completely remove the line with `usart.writer.print`, and `432` if we keep it but don't output the number. In other words, the use of `std.fmt` adds overhead only when specifiers are actually used, something that would be hard to achieve with a `printf()`-style C/C++ function.
+Here we are adding a `SysTick` timer for a better `delay()` along with `USART` to say the actual `Hello`. (I've moved all helpers into a module called `z41` here.)
+
+Our binary is `792` bytes now, or `314` if we completely remove the line with `usart.writer.print`, and `432` if we keep it but don't output the number. In other words, the use of `std.fmt` adds overhead only when specifiers are actually used, something that would be hard to achieve with a `printf()`-style C/C++ function.
 
 ```zig
 const std = @import("std");
@@ -349,11 +351,9 @@ export fn _start() noreturn {
 }
 ```
 
-I've moved all helpers into a module called `z41` here and using a `SysTick` timer for better timeouts along with a basic `USART` wrapper.
-
 ### RegisterSet
 
-I've added `RegisterSet` under the hood to help with definition of hardware registers. It's similar to this `reg()` helper from `v0`, but allows using structs as well. For example, this is how `STK_CTRL` is described in `SysTick` (you should appreciate Zig allowing anonymous `enum`s like here in `CLKSOURCE`):
+I've added `RegisterSet` under the hood to help with definition of hardware registers. It's similar to this `reg()` helper from `v0`, but allows using structs as well. For example, this is how `STK_CTRL` is described in `SysTick` (you should appreciate Zig allowing anonymous enums like here in `CLKSOURCE`):
 
 ```zig
 const STK_CTRL = regs.at(0, packed struct(u32) {
@@ -399,11 +399,11 @@ pub fn at(comptime offset: u32, comptime reg_type: type) *volatile reg_type {
 
 ### SysTick
 
-A `SysTick` timer is described in the chapter 4.5 of the Programming Manual and is something common to all processors based on Cortex®-M3. It's a simple counter that is decremented on every (or every 8ths) CPU clock cycle and generating an interrupt when reaching zero. It can be used to implement a notion of system time (e.g. milliseconds since system start) along with better delays where we don't have to rely on how exactly our code is compiled.
+A `SysTick` timer is described in the chapter 4.5 of the Programming Manual and is something common to all processors based on Cortex®-M3. It's a simple counter that is decremented on every (or every 8ths) CPU clock cycle and generates an interrupt when it reaches zero. It can be used to implement a notion of system time (e.g. milliseconds since system start) along with better delays, where we don't have to rely on how exactly our code is compiled.
 
 We need to be able to handle interrupts for this helper and this is where our linker script needs to be changed. The handler itself is simple:
 
-```
+```zig
 pub fn SysTick(comptime cpuFreq: u32, comptime msPerTick: u32) type {
     return struct {
         export fn SysTick_Vector() void {
@@ -414,13 +414,13 @@ pub fn SysTick(comptime cpuFreq: u32, comptime msPerTick: u32) type {
         ...
 ```
 
-The handler needs to be `export`ed for our linker script to place a pointer to it into appropriate location. (Note that the export only happens when `SysTick` is used, something that would be hard to achieve in C/C++ without macros.) 
+It needs to be `export`ed for our linker script to place a pointer to it into an appropriate location. (Note that the export only happens when `SysTick` is used, something that would be hard to achieve in C/C++ without macros.) 
 
-Other than `export` no special interrupt-related syntax or attributes are needed thanks to the clever way interrupts are handled in this architecture:
+Other than `export` no other attributes are needed here thanks to the clever way interrupts ("exceptions") are handled (see chapter 2.3.7 in the Programming Manual):
 
-- registers r0-r3 are automatically pushed to the stack along with flags when an interrupt occurs, while remaining registers are already expected to be preserved by the compiler even by regular functions;
+- registers `r0`-`r3` are automatically pushed to the stack along with flags when an interrupt occurs, while remaining registers are already expected to be preserved by the compiler even in regular functions;
 
-- unlike other architectures no special "return from interrupt" instruction is needed here because the return address in LR register is set to a special value that any regular return from function (`bx lr`) will be recognized as a return from interrupt restoring r0-r3, etc.
+- unlike other architectures no special "return from interrupt" instruction is needed, because the return address in `LR` register is set to a special value that any return from function (`bx lr`) will be recognized as a return from an interrupt restoring `r0`-`r3`, etc.
 
 So we need to add a pointer to our handler into the interrupt vector table at the start of our code (see table 63 in the Reference Manual again):
 
@@ -436,11 +436,11 @@ So we need to add a pointer to our handler into the interrupt vector table at th
     	/* Other vectors follow, but since we are not using them we can just start our code earlier. */
         ...
 
-Note the use of `DEFINED`: it allows correct linking even when the target program does not use the `SysTick` timer. (By the way, the use of `0xDEAD` for undefined handlers is temporary here, a central "panic" handler halting the MCU would be a better option eventually.)
+Note the use of `DEFINED`: it allows correct linking even when the target program does not need the `SysTick` timer. (By the way, the use of `0xDEAD` for undefined handlers is temporary here, a central "panic" handler halting the MCU would be a better option eventually.)
 
 ### `build.zig`
 
-I've been using a simple shell script (see `build.sh`)to build and flash the first 2 examples:
+I've been using a simple shell script to build and flash the first 2 examples:
 
 ```bash
 #!/bin/sh -e
@@ -456,7 +456,7 @@ rm main main.o
 st-flash --reset --format ihex write main.hex 
 ```
 
-However in this one we want to be able to pull our helpers from a "module" in `./lib`. This still could be described in a shell script of course, but also was curious how Zig build system works, so I've added `build.zig`.
+However in this one we want to be able to pull our helpers from a "module" in `./lib`. This still could be described in a shell script of course, but I also was curious about Zig's build system, so I've added `build.zig`.
 
 Now the example can be compiled with `zig build` or flashed with `zig build flash`.
 
